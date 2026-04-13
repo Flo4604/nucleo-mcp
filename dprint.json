@@ -1,0 +1,15 @@
+{
+  "typescript": {
+    "indentWidth": 2,
+    "quoteStyle": "alwaysDouble",
+    "semiColons": "always",
+    "useTabs": true
+  },
+  "json": {},
+  "includes": ["src/**/*.ts", "*.json"],
+  "excludes": ["node_modules", "src/db/schema.ts"],
+  "plugins": [
+    "https://plugins.dprint.dev/typescript-0.95.4.wasm",
+    "https://plugins.dprint.dev/json-0.21.3.wasm"
+  ]
+}

@@ -28,7 +28,7 @@ Project tools require a Nucleo Pro/Team account. The auth token is automatically
 ## Setup
 
 ```bash
-git clone https://github.com/steamsets/nucleo-mcp.git
+git clone https://github.com/Flo4604/nucleo-mcp.git
 cd nucleo-mcp
 bun install
 ```

@@ -1,25 +1,26 @@
 {
   "name": "nucleo-mcp",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "start": "bun run src/index.ts",
+    "dev": "bun --watch src/index.ts",
+    "credential": "bun run scripts/credential.ts",
     "format": "dprint fmt",
-    "lint": "oxlint src/",
-    "check": "oxlint src/ && dprint check",
-    "introspect": "bunx drizzle-kit introspect"
+    "lint": "oxlint src/ scripts/",
+    "check": "oxlint src/ scripts/ && dprint check && tsc --noEmit"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.12.1",
-    "drizzle-orm": "^1.0.0-beta.21"
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "drizzle-orm": "^1.0.0-beta.21",
+    "fflate": "^0.8.2",
+    "zod": "^3.25.0"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/bun": "^1.3.12",
-    "better-sqlite3": "^12.9.0",
     "dprint": "^0.54.0",
-    "drizzle-kit": "^1.0.0-beta.21",
-    "oxlint": "^1.60.0"
+    "oxlint": "^1.60.0",
+    "typescript": "^5.7.0"
   }
 }

@@ -1,207 +1,134 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { eq, sql } from "drizzle-orm";
-import { readFile } from "fs/promises";
-import { join } from "path";
+import { inArray } from "drizzle-orm";
 import { z } from "zod";
-import { nucleoApi } from "../api";
-import { decryptAccountData } from "../auth";
-import { db, schema, writeDb } from "../db";
-import { NC_PROJECTS_PATH, SETS_PATH } from "../paths";
+import type { Caller } from "../auth";
+import { db, schema } from "../db";
+import { teamSync } from "../nucleo/api";
+import { DEFAULT_COLOR, renderSvg } from "../svg";
 
-const account = decryptAccountData();
+const HEX = /^#?[0-9a-fA-F]{6}$/;
 
-function getTeam() {
-	const [team] = db.select().from(schema.teams).limit(1).all();
-	if (!team) throw new Error("No team found in local Nucleo database");
-	return team;
+function normaliseColor(value: string | undefined, fallback: string): string {
+	if (!value) return fallback;
+	if (!HEX.test(value)) throw new Error(`Expected a six-digit hex colour, got "${value}"`);
+	return value.replace("#", "");
 }
 
-export function registerProjectTools(server: McpServer) {
-	server.tool("list_projects", "List all Nucleo projects (collections).", {}, async () => {
-		const team = getTeam();
-		const data = await nucleoApi("GET", `api/projectsByTeam/${team.remoteId}`);
-		return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
+function json(value: unknown) {
+	return { content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }] };
+}
+
+/**
+ * Projects live on the caller's Nucleo account, so every call here uses the
+ * caller's own token rather than the token the server syncs the library with.
+ */
+export function registerProjectTools(server: McpServer, caller: Caller): void {
+	const resolveTeam = (requested?: string): string => {
+		if (requested) return requested;
+		const team = caller.teams[0];
+		if (!team) throw new Error("This Nucleo account has no team; projects require a Pro or Team plan");
+		return String(team.id);
+	};
+
+	server.registerTool("list_projects", {
+		title: "List projects",
+		description: "List the Nucleo projects (collections) on the caller's team.",
+		inputSchema: {
+			team_id: z.string().optional().describe("Team ID; defaults to the caller's first team"),
+		},
+	}, async ({ team_id }) => json(await teamSync("GET", `api/projectsByTeam/${resolveTeam(team_id)}`)));
+
+	server.registerTool(
+		"create_project",
+		{
+			title: "Create a project",
+			description: "Create a new Nucleo project (collection) on the caller's team.",
+			inputSchema: {
+				title: z.string().min(1).describe("Project name"),
+				primaryColor: z.string().optional().describe("Hex colour, default 000000"),
+				secondaryColor: z.string().optional().describe("Hex colour, default ffffff"),
+				backgroundColor: z.string().optional().describe("Hex colour, default ffffff"),
+				team_id: z.string().optional(),
+			},
+		},
+		async ({ title, primaryColor, secondaryColor, backgroundColor, team_id }) =>
+			json(
+				await teamSync("POST", `api/addProject/${caller.token}`, {
+					title,
+					team_id: resolveTeam(team_id),
+					primaryColor: normaliseColor(primaryColor, "000000"),
+					secondaryColor: normaliseColor(secondaryColor, "ffffff"),
+					backgroundColor: normaliseColor(backgroundColor, "ffffff"),
+				}),
+			),
+	);
+
+	server.registerTool("add_icons_to_project", {
+		title: "Add icons to a project",
+		description: "Add icons to a Nucleo project by their IDs.",
+		inputSchema: {
+			project_id: z.number().int().describe("The project ID to add icons to"),
+			icon_ids: z.array(z.number().int()).min(1).describe("Icon IDs to add"),
+			team_id: z.string().optional(),
+		},
+	}, async ({ project_id, icon_ids, team_id }) => {
+		// Fetch every requested icon in one query, then build the payload.
+		const rows = db
+			.select()
+			.from(schema.icons)
+			.where(inArray(schema.icons.id, icon_ids))
+			.all();
+
+		if (rows.length === 0) {
+			return {
+				content: [{ type: "text" as const, text: "No icons matched the given IDs" }],
+				isError: true,
+			};
+		}
+
+		const payload = rows.map((icon) => ({
+			name: icon.name,
+			klass: icon.fill,
+			tags: (JSON.parse(icon.tags) as string[]).join(","),
+			nucleo_tags: null,
+			grid: icon.size,
+			width: icon.size,
+			height: icon.size,
+			src: renderSvg(icon.svg, icon.size, DEFAULT_COLOR),
+			project_id,
+		}));
+
+		const result = await teamSync("POST", `api/addIcons/${caller.token}`, {
+			icons: JSON.stringify(payload),
+			project_id,
+			team_id: resolveTeam(team_id),
+		});
+
+		const missing = icon_ids.filter((id) => !rows.some((row) => row.id === id));
+		return json({ added: payload.length, missing, result });
 	});
 
-	server.tool(
-		"create_project",
-		"Create a new Nucleo project (collection). Syncs to both the remote API and the local database.",
-		{
-			title: z.string().describe("Project name"),
-			primaryColor: z.string().default("000000").optional().describe("Hex color (default: 000000)"),
-			secondaryColor: z.string().default("ffffff").optional().describe("Hex color"),
-			backgroundColor: z.string().default("ffffff").optional().describe("Hex color"),
+	server.registerTool("update_project", {
+		title: "Update a project",
+		description: "Update a Nucleo project's title or colours.",
+		inputSchema: {
+			project_id: z.number().int().describe("The project ID to update"),
+			title: z.string().optional(),
+			primaryColor: z.string().optional(),
+			secondaryColor: z.string().optional(),
+			backgroundColor: z.string().optional(),
+			team_id: z.string().optional(),
 		},
-		async ({ title, primaryColor, secondaryColor, backgroundColor }) => {
-			const team = getTeam();
-			const pColor = primaryColor ?? "000000";
-			const sColor = secondaryColor ?? "ffffff";
-			const bColor = backgroundColor ?? "ffffff";
+	}, async ({ project_id, title, primaryColor, secondaryColor, backgroundColor, team_id }) => {
+		const body: Record<string, unknown> = {
+			id: project_id,
+			team_id: resolveTeam(team_id),
+		};
+		if (title) body.title = title;
+		if (primaryColor) body.primaryColor = normaliseColor(primaryColor, "000000");
+		if (secondaryColor) body.secondaryColor = normaliseColor(secondaryColor, "ffffff");
+		if (backgroundColor) body.backgroundColor = normaliseColor(backgroundColor, "ffffff");
 
-			const remote = (await nucleoApi("POST", `api/addProject/${account.token}`, {
-				title,
-				team_id: team.remoteId!,
-				primaryColor: pColor,
-				secondaryColor: sColor,
-				backgroundColor: bColor,
-			})) as Record<string, unknown>;
-
-			const projectPath = join(NC_PROJECTS_PATH, remote._id as string);
-			await Bun.$`mkdir -p ${projectPath}`;
-
-			const [inserted] = writeDb
-				.insert(schema.projects)
-				.values({
-					title,
-					teamId: team.id,
-					path: projectPath,
-					uuid: remote._id as string,
-					order: 0,
-					iconsCount: 0,
-					primaryColor: pColor,
-					secondaryColor: sColor,
-					backgroundColor: bColor,
-					local: "0",
-					createdAt: sql`datetime('now')`,
-					updatedAt: sql`datetime('now')`,
-				})
-				.returning({ id: schema.projects.id })
-				.all();
-
-			return {
-				content: [
-					{
-						type: "text",
-						text: JSON.stringify({ ...remote, local_id: inserted.id }, null, 2),
-					},
-				],
-			};
-		},
-	);
-
-	server.tool(
-		"add_icons_to_project",
-		"Add icons to a Nucleo project by their IDs. Syncs to both the remote API and the local database.",
-		{
-			project_id: z.number().describe("The local project ID to add icons to"),
-			icon_ids: z.array(z.number()).describe("Array of icon IDs to add"),
-		},
-		async ({ project_id, icon_ids }) => {
-			const team = getTeam();
-
-			const iconData: {
-				name: string | null;
-				klass: string | null;
-				tags: string | null;
-				nucleo_tags: string | null;
-				grid: number | null;
-				width: number | null;
-				height: number | null;
-				src: string;
-				project_id: number;
-			}[] = [];
-
-			for (const id of icon_ids) {
-				const [row] = await db.select().from(schema.icons).where(eq(schema.icons.id, id)).limit(1);
-				if (!row || !row.setId) continue;
-
-				try {
-					const src = await readFile(join(SETS_PATH, String(row.setId), `${row.id}.svg`), "utf-8");
-					iconData.push({
-						name: row.name,
-						klass: row.klass,
-						tags: row.tags,
-						nucleo_tags: row.nucleoTags,
-						grid: row.grid,
-						width: row.width,
-						height: row.height,
-						src,
-						project_id,
-					});
-				} catch {
-					// skip missing SVG files
-				}
-			}
-
-			if (iconData.length === 0) {
-				return {
-					content: [{ type: "text", text: "No valid icons found for the given IDs" }],
-					isError: true,
-				};
-			}
-
-			const data = await nucleoApi("POST", `api/addIcons/${account.token}`, {
-				icons: JSON.stringify(iconData),
-				project_id,
-				team_id: team.remoteId!,
-			});
-
-			// Mirror into local DB
-			const [localProject] = await db
-				.select({ id: schema.projects.id, path: schema.projects.path })
-				.from(schema.projects)
-				.where(eq(schema.projects.id, project_id))
-				.limit(1);
-
-			if (localProject) {
-				for (const icon of iconData) {
-					const [inserted] = writeDb
-						.insert(schema.icons)
-						.values({
-							name: icon.name,
-							klass: icon.klass,
-							tags: icon.tags,
-							nucleoTags: icon.nucleo_tags,
-							grid: icon.grid,
-							width: icon.width,
-							height: icon.height,
-							src: icon.src,
-							projectId: localProject.id,
-							local: "0",
-							createdAt: sql`datetime('now')`,
-							updatedAt: sql`datetime('now')`,
-						})
-						.returning({ id: schema.icons.id })
-						.all();
-
-					if (localProject.path) {
-						await Bun.write(join(localProject.path, `${inserted.id}.svg`), icon.src);
-					}
-				}
-
-				writeDb
-					.update(schema.projects)
-					.set({
-						iconsCount: sql`(SELECT COUNT(*) FROM icons WHERE project_id = ${localProject.id})`,
-					})
-					.where(eq(schema.projects.id, localProject.id))
-					.run();
-			}
-
-			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-		},
-	);
-
-	server.tool(
-		"update_project",
-		"Update a Nucleo project's properties (title, colors).",
-		{
-			project_id: z.number().describe("The project ID to update"),
-			title: z.string().optional().describe("New project title"),
-			primaryColor: z.string().optional().describe("Hex color"),
-			secondaryColor: z.string().optional().describe("Hex color"),
-			backgroundColor: z.string().optional().describe("Hex color"),
-		},
-		async ({ project_id, ...updates }) => {
-			const team = getTeam();
-			const body: Record<string, unknown> = { id: project_id, team_id: team.remoteId! };
-			if (updates.title) body.title = updates.title;
-			if (updates.primaryColor) body.primaryColor = updates.primaryColor;
-			if (updates.secondaryColor) body.secondaryColor = updates.secondaryColor;
-			if (updates.backgroundColor) body.backgroundColor = updates.backgroundColor;
-
-			const data = await nucleoApi("POST", `api/updateProject/${account.token}`, body);
-			return { content: [{ type: "text", text: JSON.stringify(data, null, 2) }] };
-		},
-	);
+		return json(await teamSync("POST", `api/updateProject/${caller.token}`, body));
+	});
 }

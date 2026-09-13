@@ -1,14 +1,9 @@
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { registerIconTools } from "./tools/icons";
-import { registerProjectTools } from "./tools/projects";
-import { registerSetTools } from "./tools/sets";
+import { startAuthCacheSweeper } from "./auth";
+import { serve } from "./http";
+import { startSyncLoop } from "./sync";
 
-const server = new McpServer({ name: "nucleo", version: "1.0.0" });
-
-registerSetTools(server);
-registerIconTools(server);
-registerProjectTools(server);
-
-const transport = new StdioServerTransport();
-await server.connect(transport);
+// The library mirror refreshes in the background; the server starts serving
+// immediately and reports "seeding" on /health until the first sync lands.
+startSyncLoop();
+startAuthCacheSweeper();
+serve();

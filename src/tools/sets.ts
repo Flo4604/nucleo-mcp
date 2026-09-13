@@ -1,55 +1,53 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
-import { asc, eq, like } from "drizzle-orm";
+import { asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { db, schema } from "../db";
+import { GROUP_KEYS } from "../nucleo/groups";
+import { groupStatuses } from "../sync";
 
-export function registerSetTools(server: McpServer) {
-	server.tool(
-		"list_groups",
-		"List all Nucleo icon groups/families (e.g. UI, Core, Micro Bold, Sharp, Pixel) with icon counts.",
-		{},
-		async () => {
-			const rows = await db
-				.select({
-					id: schema.groups.id,
-					title: schema.groups.title,
-					iconsCount: schema.groups.iconsCount,
-				})
-				.from(schema.groups)
-				.orderBy(asc(schema.groups.order));
+export function registerSetTools(server: McpServer): void {
+	server.registerTool("list_groups", {
+		title: "List icon families",
+		description: "List the Nucleo icon families held by this server, with icon counts and when each "
+			+ "was last synced from Nucleo.",
+		inputSchema: {},
+	}, async () => ({
+		content: [{
+			type: "text" as const,
+			text: JSON.stringify(
+				groupStatuses().map((g) => ({
+					...g,
+					syncedAt: g.syncedAt ? new Date(g.syncedAt).toISOString() : null,
+				})),
+				null,
+				2,
+			),
+		}],
+	}));
 
-			return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
+	server.registerTool("list_sets", {
+		title: "List icon sets",
+		description: "List icon sets, optionally restricted to one family.",
+		inputSchema: {
+			group: z.enum(GROUP_KEYS as [string, ...string[]]).optional()
+				.describe("Icon family: axis (Nucleo UI), core, micro, sharp, pixel"),
 		},
-	);
+	}, async ({ group }) => {
+		// The count comes from a grouped join, not a per-set follow-up query.
+		const rows = db
+			.select({
+				id: schema.sets.id,
+				label: schema.sets.label,
+				group: schema.sets.groupKey,
+				iconCount: sql<number>`count(${schema.iconSets.iconId})`,
+			})
+			.from(schema.sets)
+			.leftJoin(schema.iconSets, eq(schema.iconSets.setId, schema.sets.id))
+			.where(group ? eq(schema.sets.groupKey, group) : undefined)
+			.groupBy(schema.sets.id)
+			.orderBy(asc(schema.sets.groupKey), asc(schema.sets.label))
+			.all();
 
-	server.tool(
-		"list_sets",
-		"List all icon sets, optionally filtered by group name.",
-		{
-			group: z
-				.string()
-				.optional()
-				.describe("Filter by group name (e.g. 'Nucleo UI', 'Nucleo Core', 'Nucleo Pixel')"),
-		},
-		async ({ group }) => {
-			let query = db
-				.select({
-					id: schema.sets.id,
-					title: schema.sets.title,
-					iconsCount: schema.sets.iconsCount,
-					groupName: schema.groups.title,
-				})
-				.from(schema.sets)
-				.innerJoin(schema.groups, eq(schema.sets.groupId, schema.groups.id))
-				.$dynamic();
-
-			if (group) {
-				query = query.where(like(schema.groups.title, `%${group}%`));
-			}
-
-			const rows = await query.orderBy(asc(schema.groups.order), asc(schema.sets.order));
-
-			return { content: [{ type: "text", text: JSON.stringify(rows, null, 2) }] };
-		},
-	);
+		return { content: [{ type: "text" as const, text: JSON.stringify(rows, null, 2) }] };
+	});
 }

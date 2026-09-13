@@ -1,145 +1,45 @@
-import { sqliteTable, index, integer, numeric, text } from "drizzle-orm/sqlite-core";
-import { sql } from "drizzle-orm";
+import { index, integer, primaryKey, sqliteTable, text } from "drizzle-orm/sqlite-core";
 
-export const icons = sqliteTable(
-	"icons",
-	{
-		id: integer().primaryKey(),
-		local: numeric(),
-		remoteId: integer("remote_id"),
-		uuid: integer(),
-		klass: text(),
-		grid: integer(),
-		width: integer(),
-		height: integer(),
-		size: integer(),
-		fillAll: numeric("fill_all"),
-		tags: text(),
-		nucleoTags: text("nucleo_tags"),
-		setId: integer("set_id"),
-		projectId: integer("project_id"),
-		filename: text(),
-		name: text(),
-		src: text(),
-		favourite: numeric(),
-		demo: numeric().default("0"),
-		originalColor: text(),
-		createdAt: numeric("created_at").default(sql`(CURRENT_TIMESTAMP)`).notNull(),
-		updatedAt: numeric("updated_at"),
-		place: integer(),
-		strokeMax: integer("stroke_max"),
-		cornerCustom: integer("corner_custom").default(0),
-	},
-	(table) => [
-		index("index_set_remote_icons").on(table.setId, table.remoteId),
-		index("index_remote_id_demo_icons").on(table.remoteId, table.demo),
-		index("index_remote_id_icons").on(table.remoteId),
-		index("index_sets_icons").on(table.setId),
-		index("index_projects_icons").on(table.projectId),
-	],
-);
-
-export const projects = sqliteTable("projects", {
-	id: integer().primaryKey(),
-	local: numeric(),
-	path: text(),
-	checksum: text(),
-	sizes: text(),
-	teamId: integer("team_id"),
-	order: integer(),
-	iconsCount: integer("icons_count"),
-	title: text(),
-	primaryColor: text(),
-	secondaryColor: text(),
-	backgroundColor: text(),
-	createdAt: numeric("created_at").default(sql`(CURRENT_TIMESTAMP)`).notNull(),
-	updatedAt: numeric("updated_at"),
-	uuid: text(),
-	stroke: integer(),
-	cap: text(),
-	frameColor: text(),
-	frameRadius: integer(),
-	frameIconSize: integer(),
-	frameSize: integer(),
-	export: text(),
-	groupId: integer("group_id"),
-});
-
-export const teams = sqliteTable("teams", {
-	id: integer().primaryKey(),
-	remoteId: integer("remote_id"),
-	adminId: integer("admin_id"),
-	limit: integer(),
-	path: text(),
-	relativePath: text("relative_path"),
-	title: text(),
-	isAdmin: numeric("is_admin"),
-	order: integer(),
-	createdAt: numeric("created_at").default(sql`(CURRENT_TIMESTAMP)`).notNull(),
-	updatedAt: numeric("updated_at"),
-	sizes: text(),
-	teamLivePath: text("team_live_path"),
-	readOnly: numeric("read_only"),
-	legacy: numeric(),
-	pro: numeric(),
-});
-
-export const projectGroups = sqliteTable("project_groups", {
-	id: integer().primaryKey(),
-	local: numeric(),
-	uuid: text(),
-	checksum: text(),
-	sizes: text(),
-	teamId: integer("team_id"),
-	order: integer(),
-	iconsCount: integer("icons_count").default(0),
-	title: text(),
-	primaryColor: text(),
-	secondaryColor: text(),
-	backgroundColor: text(),
-	stroke: integer(),
-	cap: text(),
-	frameColor: text(),
-	frameRadius: integer(),
-	frameIconSize: integer(),
-	frameSize: integer(),
-	groupId: integer("group_id"),
-	export: text(),
-	createdAt: numeric("created_at").default(sql`(CURRENT_TIMESTAMP)`).notNull(),
-	updatedAt: numeric("updated_at"),
-});
-
+/** One row per icon family, carrying the watermark used to skip unchanged syncs. */
 export const groups = sqliteTable("groups", {
-	id: integer().primaryKey({ autoIncrement: true }),
-	title: text(),
-	sizes: text(),
-	remoteId: integer("remote_id"),
-	local: integer(),
-	order: integer(),
-	demo: numeric(),
-	createdAt: numeric("created_at").default(sql`(CURRENT_TIMESTAMP)`).notNull(),
-	updatedAt: numeric("updated_at"),
-	groupId: integer("group_id"),
-	iconsCount: integer("icons_count"),
-	favCount: integer("fav_count"),
+	key: text("key").primaryKey(),
+	title: text("title").notNull(),
+	lastUpdate: integer("last_update").notNull().default(0),
+	iconCount: integer("icon_count").notNull().default(0),
+	syncedAt: integer("synced_at"),
 });
 
-export const sets = sqliteTable(
-	"sets",
-	{
-		id: integer().primaryKey({ autoIncrement: true }),
-		local: numeric(),
-		demo: numeric(),
-		groupId: integer("group_id"),
-		remoteId: integer("remote_id"),
-		order: integer(),
-		title: text(),
-		sizes: text(),
-		createdAt: numeric("created_at").default(sql`(CURRENT_TIMESTAMP)`).notNull(),
-		updatedAt: numeric("updated_at"),
-		favCount: integer("fav_count"),
-		iconsCount: integer("icons_count"),
-		setType: integer("set_type"),
-	},
-	(table) => [index("index_remote_id_sets").on(table.remoteId)],
-);
+export const sets = sqliteTable("sets", {
+	id: integer("id").primaryKey(),
+	groupKey: text("group_key").notNull(),
+	label: text("label").notNull(),
+}, (t) => [index("sets_group_idx").on(t.groupKey)]);
+
+export const icons = sqliteTable("icons", {
+	id: integer("id").primaryKey(),
+	groupKey: text("group_key").notNull(),
+	name: text("name").notNull(),
+	/** Exactly one of glyph, outline, outline-duo, glyph-duo. */
+	fill: text("fill"),
+	/** Inner markup only. It has no <svg> wrapper; see src/svg.ts. */
+	svg: text("svg").notNull(),
+	size: integer("size"),
+	tags: text("tags").notNull().default("[]"),
+	lastUpdate: integer("last_update").notNull().default(0),
+	/** Lowercased name and tags, so search is one indexed LIKE instead of a join. */
+	search: text("search").notNull(),
+}, (t) => [
+	index("icons_group_idx").on(t.groupKey),
+	index("icons_fill_idx").on(t.fill),
+	index("icons_search_idx").on(t.search),
+	index("icons_name_idx").on(t.name),
+]);
+
+/** Icons belong to zero or more sets, so the mapping needs its own table. */
+export const iconSets = sqliteTable("icon_sets", {
+	iconId: integer("icon_id").notNull(),
+	setId: integer("set_id").notNull(),
+}, (t) => [
+	primaryKey({ columns: [t.iconId, t.setId] }),
+	index("icon_sets_set_idx").on(t.setId),
+]);

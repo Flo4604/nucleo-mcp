@@ -19,9 +19,10 @@ ENV NODE_ENV=production \
 	PORT=8080
 
 # The mirror rebuilds itself from Nucleo on boot, so an empty volume is fine.
-RUN mkdir -p /data && chown -R bun:bun /data /app
+# Runs as root: hosts mount volumes root-owned at runtime, which a non-root user
+# cannot write the database into.
+RUN mkdir -p /data
 VOLUME ["/data"]
-USER bun
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
